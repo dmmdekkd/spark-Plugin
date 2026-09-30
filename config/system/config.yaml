@@ -1,0 +1,20 @@
+# 系统配置文件请勿修改，修改请前往 Yz/config/spark-Plugin.yaml 或锅巴面板
+
+admin:
+  priorityTips: |-
+    插件优先级，数字越小越优先
+  priority: 1000
+  regTips: |-
+    指令前缀（#火花添加 / #火花帮助 等）
+  reg: 火花
+SparkSet:
+  usersTips: |-
+    续火花目标用户列表，每日定时任务会向这些用户主动发送"续火花"表情；锅巴面板可从好友列表下拉选择，也可用 #火花添加 <昵称|uid> 添加
+  users: []
+  sparkEmojiTips: |-
+    续火花表情：支持多个，锅巴下拉可多选官方贴纸（选择后自动转对应图片发送），也可填任意图片 URL
+  sparkEmoji:
+    - "续火花"
+  dailyCronTips: |-
+    每日定时任务 cron 表达式（node-schedule 五段式），默认每天 00:10 执行全部配置用户；清空可关闭定时任务，修改实时生效
+  dailyCron: "0 10 0 * * *"
