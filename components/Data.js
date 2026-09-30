@@ -1,21 +1,42 @@
-import { existsSync, readdirSync } from "node:fs"
-import path from "node:path"
-import { Path } from "../constants/Path.js"
-import { fetchFriends, fetchStickers } from "../guoba/schemas/listCache.js"
+import { douyinAccounts, onlineAccounts, fetchFriends, fetchStickers } from "../guoba/schemas/listCache.js"
 import Config from "./Config.js"
-
-const DATA_BASE = path.join(Path, "data", "DouYin")
+import loader from "../../../lib/plugins/loader.js"
 
 class Data {
-  /** 已登录的抖音账号 */
+  /** 已登录抖音账号 id 列表（含离线，读 data/DouYin/<id>/device.json，用于配置归属/分组） */
   accounts() {
-    if (!existsSync(DATA_BASE)) return []
-    return readdirSync(DATA_BASE).filter(d => existsSync(path.join(DATA_BASE, d, "device.json")))
+    return douyinAccounts()
   }
 
-  /** 配置的续火花目标用户（uid 列表） */
-  users() {
-    return (Config.SparkSet.users || []).map(String).filter(Boolean)
+  /** 在线抖音账号 id 列表（内存实时，用于实际发送/拉取） */
+  online() {
+    return onlineAccounts()
+  }
+
+  /**
+   * 指定账号的子配置（完全独立：只读该账号自身字段，不回退全局配置）
+   * 旧版全局字段已在锅巴面板首次打开时一次性迁移到各账号组，之后互不影响
+   */
+  subCfg(selfId) {
+    return (Config.SparkSet && Config.SparkSet[selfId]) || {}
+  }
+
+  /** 指定账号配置的续火花目标（uid 列表，独立配置） */
+  usersOf(selfId) {
+    const cfg = this.subCfg(selfId)
+    return Array.isArray(cfg.users) ? cfg.users.map(String).filter(Boolean) : []
+  }
+
+  /** 指定账号配置的火花表情列表（独立配置，未配置默认空） */
+  emojiListOf(selfId) {
+    const cfg = this.subCfg(selfId)
+    const raw = cfg?.sparkEmoji
+    return (Array.isArray(raw) ? raw : raw != null ? [raw] : []).map(String).filter(Boolean)
+  }
+
+  /** 指定账号的每日定时 cron（独立配置，未配置默认空） */
+  dailyCronOf(selfId) {
+    return this.subCfg(selfId).dailyCron ?? ""
   }
 
   /** 构建索引：备注名→好友、昵称→好友列表（重名存数组）、uid→好友 */
@@ -35,25 +56,33 @@ class Data {
     return { byUid, byRemark, byNick }
   }
 
-  /** 实时拉取好友列表并构建索引 */
+  /** 实时拉取好友列表并构建索引（跨全部账号，用于查找好友归属） */
   async buildIndex() {
     const friends = await fetchFriends().catch(() => [])
     return this._buildIndex(friends)
   }
 
-  /** 实时按备注名/昵称/uid 查询单个好友 */
+  /** 实时按备注名/昵称/uid 查询单个好友（跨全部账号） */
   async findFriend(key) {
     const k = String(key)
     const idx = await this.buildIndex()
     return idx.byRemark.get(k) || idx.byNick.get(k)?.[0] || idx.byUid.get(k) || null
   }
 
+  /** 实时在指定账号的好友中按备注名/昵称/uid 查询单个好友 */
+  async findFriendIn(selfId, key) {
+    const friends = (await fetchFriends().catch(() => [])).filter(f => f.byId === selfId)
+    const idx = this._buildIndex(friends)
+    const k = String(key)
+    return idx.byRemark.get(k) || idx.byNick.get(k)?.[0] || idx.byUid.get(k) || null
+  }
+
   /**
-   * 解析续火花目标：配置值存 uid，实时拉取好友列表并反查真实 uid/chatId
-   * @returns {{ resolved: Array<{target, uid, chatId, nickname, remark}>, missing: string[] }}
+   * 解析指定账号的续火花目标：只反查该账号好友列表中的 uid
+   * @returns {{ resolved: Array<{target, uid, byId, chatId, nickname, remark}>, missing: string[] }}
    */
-  async resolveTargets(users) {
-    const friends = await fetchFriends().catch(() => [])
+  async resolveTargets(selfId, users) {
+    const friends = (await fetchFriends().catch(() => [])).filter(f => f.byId === selfId)
     const { byUid } = this._buildIndex(friends)
     const resolved = []
     const missing = []
@@ -66,6 +95,7 @@ class Data {
       resolved.push({
         target,
         uid: f.uid,
+        byId: f.byId || "",
         chatId: f.chatId || "",
         nickname: f.nickname || "",
         remark: f.remark || "",
@@ -74,50 +104,82 @@ class Data {
     return { resolved, missing }
   }
 
-  /** 每日定时任务：对配置的目标用户主动发送"续火花"表情 */
-  async dailyTask() {
-    const users = this.users()
-    const emoji = Config.SparkSet.sparkEmoji
-    // 兼容旧版单值字符串与新版数组：统一归一化为表情列表
-    const emojiList = (Array.isArray(emoji) ? emoji : [emoji]).map(String).filter(Boolean)
-    if (!users.length) {
-      logger.warn("[抖音续火花] 尚未配置续火花目标，请使用 #火花添加 <昵称/uid> 或在锅巴中配置")
-      return
+  /** 为每个在线账号按各自 dailyCron 重建"每日续火花"定时任务（账号上下线/配置变化时调用，实时生效） */
+  syncDailyTasks() {
+    loader.task = (loader.task || []).filter(t => t.name !== "每日主动续火花")
+    for (const id of this.accounts()) {
+      const cron = this.dailyCronOf(id)
+      if (!cron) continue
+      loader.task.push({
+        name: `每日续火花（${id}）`,
+        cron,
+        fnc: async () => {
+          await this.dailyTask(id)
+        },
+        log: false,
+      })
     }
-    if (!emojiList.length) {
-      logger.warn("[抖音续火花] 尚未设置火花表情，请使用 #火花定时 或 #火花推送 前先在锅巴面板配置 sparkEmoji")
-      return
+    loader.createTask()
+  }
+
+  /** 每日定时任务：逐账号发送该账号配置的目标与表情（onlyId 指定仅执行某账号，否则全部在线账号） */
+  async dailyTask(onlyId) {
+    const stats = { total: 0, ok: 0, fail: 0 }
+    const accounts = onlyId ? [onlyId] : this.accounts()
+    if (!accounts.length) {
+      logger.warn("[抖音续火花] 无在线抖音账号，定时任务跳过")
+      return stats
     }
-    // 实时拉取官方贴纸 名称→贴纸 id 映射（id 会由 SDK 自动解析签名直链；URL 配置则原样使用）
+    // 实时拉取官方贴纸 名称→贴纸 id（id 由 SDK 自动解析签名直链；URL 配置则原样使用）
     const stickers = await fetchStickers().catch(() => [])
     const emojiOf = new Map()
     for (const s of stickers) {
       if (s.value) emojiOf.set(s.value, s.uriKey || s.url)
     }
-    const emojiIds = emojiList.map(e => emojiOf.get(String(e)) || e)
-    const { resolved, missing } = await this.resolveTargets(users)
-    const stats = { total: users.length, ok: 0, fail: missing.length }
-    for (const t of missing) {
-      logger.warn(`[抖音续火花] 目标 ${t} 未在好友列表，本轮跳过`)
-    }
-    for (const selfId of this.accounts()) {
+    for (const selfId of accounts) {
+      const users = this.usersOf(selfId)
+      stats.total += users.length
+      if (!users.length) continue
+      const emojiList = this.emojiListOf(selfId)
       const bot = Bot[selfId]
-      if (!bot) continue
+      if (!emojiList.length) {
+        stats.fail += users.length
+        logger.warn(`[抖音续火花] 账号 ${selfId} 未配置火花表情，本轮跳过`)
+        continue
+      }
+      if (!bot?.sdk?.msg) {
+        stats.fail += users.length
+        logger.warn(`[抖音续火花] 账号 ${selfId} 不在线，本轮跳过`)
+        continue
+      }
+      const emojiIds = emojiList.map(e => emojiOf.get(String(e)) || e)
+      const { resolved, missing } = await this.resolveTargets(selfId, users)
+      stats.fail += missing.length
+      for (const t of missing) {
+        logger.warn(`[抖音续火花] 账号 ${selfId}：目标 ${t} 未在好友列表，本轮跳过`)
+      }
       let sent = 0
       for (const t of resolved) {
-        const chatId = bot.fl?.get(t.uid)?.chatId || t.chatId || t.uid
+        const chatId = bot.fl?.get(t.uid)?.chatId || t.chatId
         const name = t.remark || t.nickname || t.uid
+        if (!chatId) {
+          stats.fail++
+          logger.warn(`[抖音续火花] 目标 ${name}（${t.uid}）暂无可发送会话，本轮跳过（请先与对方互发消息）`)
+          continue
+        }
+        let ok = true
         for (const e of emojiIds) {
           try {
             await bot.sdk.msg.send(chatId, { type: "emoji", emoji: e })
             sent++
-            stats.ok++
-            logger.mark(`[抖音续火花] 续火花成功：${name}（uid ${t.uid}，账号 ${selfId}，表情 ${emojiList[emojiIds.indexOf(e)]}）`)
+            logger.mark(`[抖音续火花] 续火花成功：${name}（账号 ${selfId}，表情 ${emojiList[emojiIds.indexOf(e)]}）`)
           } catch (err) {
+            ok = false
             stats.fail++
-            logger.error(`[抖音续火花] 续火花失败：${name}（uid ${t.uid}，账号 ${selfId}，表情 ${e}）${err.message}`)
+            logger.error(`[抖音续火花] 续火花失败：${name}（账号 ${selfId}，表情 ${emojiList[emojiIds.indexOf(e)]}）${err.message}`)
           }
         }
+        if (ok) stats.ok++
       }
       if (sent) logger.info(`[抖音续火花] 账号 ${selfId} 本次共续火花 ${sent} 个表情`)
     }
