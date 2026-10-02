@@ -11,10 +11,10 @@ export class SparkSet extends plugin {
       event: "message",
       priority: Config.admin.priority,
       rule: [
-        { reg: `^#?${Config.admin.reg}(添加)\\s+(\\d+)\\s+(\\S+)$`, fnc: "addFor", permission: "master" },
-        { reg: `^#?${Config.admin.reg}(移除|删除)\\s+(\\d+)\\s+(\\S+)$`, fnc: "removeFor", permission: "master" },
-        { reg: `^#?${Config.admin.reg}(添加)\\s+(\\S+)$`, fnc: "add", permission: "master" },
-        { reg: `^#?${Config.admin.reg}(移除|删除)\\s+(\\S+)$`, fnc: "remove", permission: "master" },
+        { reg: `^#?${Config.admin.reg}(添加)\\s+(\\d+)\\s+(.+)$`, fnc: "addFor", permission: "master" },
+        { reg: `^#?${Config.admin.reg}(移除|删除)\\s+(\\d+)\\s+(.+)$`, fnc: "removeFor", permission: "master" },
+        { reg: `^#?${Config.admin.reg}(添加)\\s+(.+)$`, fnc: "add", permission: "master" },
+        { reg: `^#?${Config.admin.reg}(移除|删除)\\s+(.+)$`, fnc: "remove", permission: "master" },
         { reg: `^#?${Config.admin.reg}列表$`, fnc: "list", permission: "master" },
         { reg: `^#?${Config.admin.reg}状态$`, fnc: "status", permission: "master" },
         { reg: `^#?${Config.admin.reg}(定时|cron)(\\s+\\d{1,2}:\\d{2}|\\s+off)?$`, fnc: "daily", permission: "master" },
@@ -27,9 +27,9 @@ export class SparkSet extends plugin {
 
   /** 添加指定账号的续火花目标：#火花添加 <账号id> <昵称/备注/uid>（对离线账号无效，需在线才能反查好友） */
   async addFor() {
-    const m = this.e.msg.match(/(\d+)\s+(\S+)\s*$/)
+    const m = this.e.msg.match(new RegExp(`^#?${Config.admin.reg}添加\\s+(\\d+)\\s+(.+?)\\s*$`))
     const id = m[1]
-    const key = m[2]
+    const key = m[2].trim()
     if (!Data.accounts().includes(id)) return this.reply(`账号 ${id} 未登录，请先使用 #抖音bot登录`), true
     if (!Data.online().includes(id)) return this.reply(`账号 ${id} 当前离线，请先使用 #抖音bot登录（离线时无法反查好友）`), true
     const f = await Data.findFriendIn(id, key).catch(() => null)
@@ -48,9 +48,9 @@ export class SparkSet extends plugin {
 
   /** 移除指定账号的续火花目标：#火花移除 <账号id> <昵称/备注/uid> */
   async removeFor() {
-    const m = this.e.msg.match(/(\d+)\s+(\S+)\s*$/)
+    const m = this.e.msg.match(new RegExp(`^#?${Config.admin.reg}(?:移除|删除)\\s+(\\d+)\\s+(.+?)\\s*$`))
     const id = m[1]
-    const key = m[2]
+    const key = m[2].trim()
     if (!Data.accounts().includes(id)) return this.reply(`账号 ${id} 未登录`), true
     let uid = key
     const f = await Data.findFriendIn(id, key).catch(() => null)
@@ -66,7 +66,7 @@ export class SparkSet extends plugin {
 
   /** 添加续火花目标用户：输入昵称/备注名/uid，通过好友列表反查确认归属账号再添加 */
   async add() {
-    const key = (this.e.msg.match(/\S+$/) || [])[0]
+    const key = (this.e.msg.match(new RegExp(`^#?${Config.admin.reg}添加\\s+(.+?)\\s*$`)) || [])[1]?.trim()
     const f = await Data.findFriend(key).catch(() => null)
     if (!f) {
       this.reply(`未在好友列表中找到「${key}」，已取消\n请确认已与对方互为好友或互发过消息`)
@@ -89,7 +89,7 @@ export class SparkSet extends plugin {
 
   /** 移除续火花目标用户（昵称/备注/uid）：从全部账号配置中移除 */
   async remove() {
-    const key = (this.e.msg.match(/\S+$/) || [])[0]
+    const key = (this.e.msg.match(new RegExp(`^#?${Config.admin.reg}(?:移除|删除)\\s+(.+?)\\s*$`)) || [])[1]?.trim()
     let uid = key
     const f = await Data.findFriend(key).catch(() => null)
     if (f) uid = f.uid
