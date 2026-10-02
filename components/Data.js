@@ -106,7 +106,7 @@ class Data {
 
   /** 为每个在线账号按各自 dailyCron 重建"每日续火花"定时任务（账号上下线/配置变化时调用，实时生效） */
   syncDailyTasks() {
-    loader.task = (loader.task || []).filter(t => t.name !== "每日主动续火花")
+    loader.task = (loader.task || []).filter(t => !String(t.name).startsWith("每日续火花"))
     for (const id of this.accounts()) {
       const cron = this.dailyCronOf(id)
       if (!cron) continue
