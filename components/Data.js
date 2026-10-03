@@ -106,7 +106,12 @@ class Data {
 
   /** 为每个在线账号按各自 dailyCron 重建"每日续火花"定时任务（账号上下线/配置变化时调用，实时生效） */
   syncDailyTasks() {
-    loader.task = (loader.task || []).filter(t => !String(t.name).startsWith("每日续火花"))
+    const tasks = loader.task || []
+    // 先取消旧任务已注册的 cron job：createTask 只对数组内的任务执行 i.job?.cancel()，
+    // 被下方 filter 移出数组的任务不会再被遍历到，残留 job 会与新建 job 同时触发导致重复续火花
+    for (const t of tasks)
+      if (String(t.name).startsWith("每日续火花") && t.job?.cancel) t.job.cancel()
+    loader.task = tasks.filter(t => !String(t.name).startsWith("每日续火花"))
     for (const id of this.accounts()) {
       const cron = this.dailyCronOf(id)
       if (!cron) continue
